@@ -1,3 +1,4 @@
 pub mod parser;
+pub mod repl;
 
-pub use parser::split;
+pub use repl::run;

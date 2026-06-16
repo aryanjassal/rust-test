@@ -29,7 +29,7 @@ impl DbCore {
         match command {
             Command::Set { key, value } => {
                 self.data.insert(key, value);
-                Response::Ok
+                Response::Simple("OK".to_string())
             }
             Command::Get { key } => match self.data.get(&key) {
                 Some(value) => match value {
@@ -48,7 +48,7 @@ impl DbCore {
             }
             Command::Save => {
                 self.save().unwrap();
-                Response::Ok
+                Response::Simple("OK".to_string())
             }
         }
     }

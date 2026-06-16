@@ -22,8 +22,8 @@ pub enum Command {
 }
 
 pub enum Response {
-    Ok,
     Nil,
+    Simple(String),
     Bulk(Vec<u8>),
     Integer(i64),
     Error(String),

@@ -1,72 +1,61 @@
 mod cli;
+mod client;
 mod redis;
+mod server;
 
-use std::{
-    io::{self, Write},
-    sync::mpsc,
-    thread,
-};
+use std::{env, sync::mpsc, thread, time::Duration};
+
+const DEFAULT_IP: &str = "127.0.0.1";
+const DEFAULT_PORT: &str = "6969";
+const DEFAULT_DUMP: &str = "dump.rdb";
 
 fn main() {
-    let (core_tx, core_rx) = mpsc::channel();
+    let args = env::args().collect::<Vec<_>>();
 
+    let mode = args.get(1).map(String::as_str).unwrap_or("dev");
+    let ip = args.get(2).map(String::as_str).unwrap_or(DEFAULT_IP);
+    let port = args.get(3).map(String::as_str).unwrap_or(DEFAULT_PORT);
+    let addr = format!("{ip}:{port}");
+
+    let result = match mode {
+        "server" => run_server(&addr),
+        "cli" => cli::run(&addr),
+        "dev" => run_dev(&addr),
+        unknown => Err(format!(
+            "unknown mode '{unknown}'. expected: server, cli, or no argument"
+        )),
+    };
+
+    if let Err(error) = result {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
+
+fn run_server(addr: &str) -> Result<(), String> {
+    let (core_tx, core_rx) = mpsc::channel();
     thread::spawn(move || {
-        let mut core = redis::core::DbCore::new("dump.rdb".to_string());
-        core.load().unwrap();
+        let mut core = server::core::DbCore::new(DEFAULT_DUMP.to_string());
+        if let Err(error) = core.load() {
+            eprintln!("failed to load dump: {error}");
+        }
         core.run(core_rx);
     });
 
-    // Store the input commands
-    let mut buffer = String::new();
+    server::tcp::run(addr, core_tx).map_err(|e| e.to_string())
+}
 
-    // REPL
-    loop {
-        // Read input
-        buffer.clear();
-        io::stdout().write_all("\n> ".as_bytes()).unwrap();
-        io::stdout().flush().unwrap();
-        io::stdin().read_line(&mut buffer).unwrap();
-        let _ = buffer.pop().unwrap_or(' '); // Trim newline
-
-        let parts = cli::split(buffer.trim())
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-
-        let command = match redis::parser::parse_command(&parts) {
-            Ok(command) => command,
-            Err(error) => {
-                println!("{error}");
-                continue;
-            }
-        };
-
-        let (reply_tx, reply_rx) = mpsc::channel();
-        if core_tx
-            .send(redis::protocol::Request {
-                command,
-                reply: reply_tx,
-            })
-            .is_err()
-        {
-            println!("ERR core unavailable");
-            break;
+fn run_dev(addr: &str) -> Result<(), String> {
+    let addr_for_server = addr.to_string();
+    thread::spawn(move || {
+        if let Err(error) = run_server(&addr_for_server) {
+            eprintln!("server failed: {error}");
         }
+    });
 
-        match reply_rx.recv() {
-            Ok(response) => match response {
-                redis::protocol::Response::Ok => println!("OK"),
-                redis::protocol::Response::Bulk(value) => {
-                    println!("{}", String::from_utf8_lossy(&value))
-                }
-                redis::protocol::Response::Nil => println!("(nil)"),
-                redis::protocol::Response::Integer(value) => println!("{value}"),
-                redis::protocol::Response::Error(error) => println!("{error}"),
-            },
-            Err(_) => {
-                println!("ERR core unavailable");
-                break;
-            }
-        }
-    }
+    // Small delay so the listener has time to bind before the client connects.
+    // TODO: Replace this with a readiness channel.
+    thread::sleep(Duration::from_millis(50));
+
+    cli::run(addr)
 }
